@@ -3,8 +3,13 @@ const zglob = @import("zglob");
 const testing = std.testing;
 
 test "basic fs module functionality" {
+    // 0.17 threads an explicit I/O instance through every filesystem call.
+    var io_state = std.Io.Threaded.init(testing.allocator, .{});
+    defer io_state.deinit();
+    const io = io_state.io();
+
     // Create an instance of Fs using testing allocator
-    var fs = zglob.Fs.init(testing.allocator);
+    var fs = zglob.Fs.init(io, testing.allocator);
 
     // Get current directory using the Fs instance
     const cwd = try fs.getCwd();
@@ -21,8 +26,13 @@ test "basic fs module functionality" {
 }
 
 test "zGlob object-oriented approach" {
+    // 0.17 threads an explicit I/O instance through every filesystem call.
+    var io_state = std.Io.Threaded.init(testing.allocator, .{});
+    defer io_state.deinit();
+    const io = io_state.io();
+
     // Create a zGlob instance
-    var glob = zglob.zGlob.init(testing.allocator);
+    var glob = zglob.zGlob.init(io, testing.allocator);
 
     // Use the fs field to access filesystem operations
     const cwd = try glob.fs.getCwd();
@@ -52,8 +62,13 @@ test "zGlob object-oriented approach" {
 }
 
 test "accessing fs through zGlob struct" {
+    // 0.17 threads an explicit I/O instance through every filesystem call.
+    var io_state = std.Io.Threaded.init(testing.allocator, .{});
+    defer io_state.deinit();
+    const io = io_state.io();
+
     // Create an instance of zGlob with testing allocator
-    var glob = zglob.zGlob.init(testing.allocator);
+    var glob = zglob.zGlob.init(io, testing.allocator);
 
     // Access the fs functionality through the glob.fs field
     const cwd = try glob.fs.getCwd();

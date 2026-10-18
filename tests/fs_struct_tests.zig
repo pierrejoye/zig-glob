@@ -10,8 +10,13 @@ test "Fs struct API" {
 
     const allocator = arena.allocator();
 
-    // Initialize the Fs struct with an allocator
-    const fs = zglob.Fs.init(allocator);
+    // 0.17 threads an explicit I/O instance through every filesystem call.
+    var io_state = std.Io.Threaded.init(allocator, .{});
+    defer io_state.deinit();
+    const io = io_state.io();
+
+    // Initialize the Fs struct with an I/O instance and an allocator
+    const fs = zglob.Fs.init(io, allocator);
 
     // Test getCwd
     const cwd = try fs.getCwd();

@@ -1,12 +1,16 @@
 const std = @import("std");
 const zglob = @import("zglob");
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    // 0.17 hands an arena to main, and a file writer is buffered.
+    const allocator = init.arena.allocator();
 
-    var stdout = std.io.getStdOut().writer();
+    var stdout_buf: [4096]u8 = undefined;
+    var stdout_writer = std.Io.File.stdout().writer(init.io, &stdout_buf);
+    const stdout = &stdout_writer.interface;
+    defer stdout_writer.interface.flush() catch |err| {
+        std.debug.print("pattern-matching: failed to flush stdout: {s}\n", .{@errorName(err)});
+    };
 
     // Basic pattern matching examples
     {
@@ -44,11 +48,11 @@ pub fn main() !void {
     {
         try stdout.print("\n--- Brace expansion ---\n", .{});
 
-        try stdout.print("'file.{txt,md}' matches 'file.txt': {}\n", .{zglob.globMatch("file.{txt,md}", "file.txt")});
-        try stdout.print("'file.{txt,md}' matches 'file.md': {}\n", .{zglob.globMatch("file.{txt,md}", "file.md")});
-        try stdout.print("'file.{txt,md}' matches 'file.js': {}\n", .{zglob.globMatch("file.{txt,md}", "file.js")});
+        try stdout.print("'file.{{txt,md}}' matches 'file.txt': {}\n", .{zglob.globMatch("file.{txt,md}", "file.txt")});
+        try stdout.print("'file.{{txt,md}}' matches 'file.md': {}\n", .{zglob.globMatch("file.{txt,md}", "file.md")});
+        try stdout.print("'file.{{txt,md}}' matches 'file.js': {}\n", .{zglob.globMatch("file.{txt,md}", "file.js")});
 
-        try stdout.print("'src/{fs,glob}/*.zig' matches 'src/fs/dir.zig': {}\n", .{zglob.globMatch("src/{fs,glob}/*.zig", "src/fs/dir.zig")});
+        try stdout.print("'src/{{fs,glob}}/*.zig' matches 'src/fs/dir.zig': {}\n", .{zglob.globMatch("src/{fs,glob}/*.zig", "src/fs/dir.zig")});
     }
 
     // Pattern matching with captures
@@ -59,8 +63,9 @@ pub fn main() !void {
         const pattern = "file.*";
         const path = "file.txt";
 
-        if (zglob.globMatchWithCaptures(pattern, path, allocator)) |captures| {
-            defer captures.deinit();
+        if (zglob.globMatchWithCaptures(pattern, path, allocator)) |maybe_captures| {
+            var captures = maybe_captures;
+            defer captures.deinit(allocator);
 
             try stdout.print("'{s}' matches '{s}' with {d} captures:\n", .{ pattern, path, captures.items.len });
 

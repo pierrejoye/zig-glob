@@ -9,7 +9,7 @@ fn hasPathComponent(path: []const u8, component: []const u8) bool {
     if (std.mem.indexOf(u8, path, component) != null) {
         return true;
     }
-    
+
     // Create a version with backslashes and try again
     var backslash_component: [100]u8 = undefined;
     var len: usize = 0;
@@ -27,8 +27,13 @@ test "glob find files - traditional API" {
 
     const allocator = arena.allocator();
 
+    // 0.17 threads an explicit I/O instance through every filesystem call.
+    var io_state = std.Io.Threaded.init(allocator, .{});
+    defer io_state.deinit();
+    const io = io_state.io();
+
     // Get the current working directory using zglob.fs
-    const fs_helper = zglob.fs.Fs.init(allocator);
+    const fs_helper = zglob.fs.Fs.init(io, allocator);
     const cwd = try fs_helper.getCwd();
     defer allocator.free(cwd);
 
@@ -37,7 +42,7 @@ test "glob find files - traditional API" {
     defer allocator.free(tests_dir);
 
     // Test finding files in the tests directory
-    const matches = try zglob.globWithCwd(allocator, "*.zig", tests_dir);
+    const matches = try zglob.globWithCwd(io, allocator, "*.zig", tests_dir);
     try testing.expect(matches.len > 0);
 
     // Verify we have found at least this test file
@@ -51,21 +56,21 @@ test "glob find files - traditional API" {
     try testing.expect(found_self);
 
     // Test with a more complex pattern
-    const glob_tests = try zglob.globWithCwd(allocator, "*glob*test*.zig", tests_dir);
+    const glob_tests = try zglob.globWithCwd(io, allocator, "*glob*test*.zig", tests_dir);
     try testing.expect(glob_tests.len > 0);
 
     // Test with pattern containing path separator
-    const src_files = try zglob.globWithCwd(allocator, "src/*.zig", cwd);
+    const src_files = try zglob.globWithCwd(io, allocator, "src/*.zig", cwd);
     try testing.expect(src_files.len > 0);
 
     // Test with ** pattern
-    const all_zig_files = try zglob.globWithCwd(allocator, "**/*.zig", cwd);
+    const all_zig_files = try zglob.globWithCwd(io, allocator, "**/*.zig", cwd);
     try testing.expect(all_zig_files.len > src_files.len); // Should find more than just src files
 
     // Test with pattern starting with directory and including ** pattern
-    const src_recursive_files = try zglob.globWithCwd(allocator, "src/**/*.zig", cwd);
+    const src_recursive_files = try zglob.globWithCwd(io, allocator, "src/**/*.zig", cwd);
     try testing.expect(src_recursive_files.len > 0);
-    
+
     // Verify we find files in the src/fs/ subdirectory
     var found_fs_file = false;
     for (src_recursive_files) |match_path| {
@@ -84,8 +89,13 @@ test "glob find files - struct API" {
 
     const allocator = arena.allocator();
 
+    // 0.17 threads an explicit I/O instance through every filesystem call.
+    var io_state = std.Io.Threaded.init(allocator, .{});
+    defer io_state.deinit();
+    const io = io_state.io();
+
     // Initialize zGlob with the allocator
-    const glob_finder = zglob.zGlob.init(allocator);
+    const glob_finder = zglob.zGlob.init(io, allocator);
 
     // Get the current working directory using glob_finder.fs
     const cwd = try glob_finder.fs.getCwd();
@@ -124,7 +134,7 @@ test "glob find files - struct API" {
     // Test with pattern starting with directory and including ** pattern
     const src_recursive_files = try glob_finder.globWithCwd("src/**/*.zig", cwd);
     try testing.expect(src_recursive_files.len > 0);
-    
+
     // Verify we find files in the src/fs/ subdirectory
     var found_fs_file = false;
     for (src_recursive_files) |match_path| {

@@ -1,17 +1,14 @@
 const std = @import("std");
-const cwd = @import("./dir.zig").getCwd();
 
 // Re-export the getCwd function
-pub const getCwd = cwd.getCwd;
+pub const getCwd = @import("./dir.zig").getCwd;
 
 // Other filesystem operations
-pub fn exists(path: []const u8) bool {
-    return std.fs.accessAbsolute(path, .{}) == .{};
+pub fn exists(io: std.Io, path: []const u8) bool {
+    return std.Io.Dir.accessAbsolute(io, path, .{}) == .{};
 }
 
-pub fn isFile(path: []const u8) bool {
-    const stat = std.fs.cwd().statFile(path) catch return false;
-    return stat.kind == .File;
+pub fn isFile(io: std.Io, path: []const u8) bool {
+    const stat = std.Io.Dir.cwd().statFile(io, path, .{}) catch return false;
+    return stat.kind == .file;
 }
-
-// More file-specific operations

@@ -61,8 +61,9 @@ test "MatchGlob struct captures" {
     const matcher = zglob.MatchGlob.init(allocator);
 
     // Test with captures
-    if (matcher.matchWithCaptures("a*c", "abc")) |captures| {
-        defer captures.deinit();
+    if (matcher.matchWithCaptures("a*c", "abc")) |maybe_captures| {
+        var captures = maybe_captures;
+        defer captures.deinit(allocator);
         try testing.expectEqual(@as(usize, 1), captures.items.len);
         try testing.expectEqual(@as(usize, 1), captures.items[0].start);
         try testing.expectEqual(@as(usize, 2), captures.items[0].end);
@@ -71,8 +72,9 @@ test "MatchGlob struct captures" {
     }
 
     // Test with multiple captures
-    if (matcher.matchWithCaptures("a*b*c", "axxbyc")) |captures| {
-        defer captures.deinit();
+    if (matcher.matchWithCaptures("a*b*c", "axxbyc")) |maybe_captures| {
+        var captures = maybe_captures;
+        defer captures.deinit(allocator);
         try testing.expectEqual(@as(usize, 2), captures.items.len);
         try testing.expectEqual(@as(usize, 1), captures.items[0].start);
         try testing.expectEqual(@as(usize, 3), captures.items[0].end);

@@ -155,8 +155,8 @@ pub fn normalizePath(allocator: Allocator, base_dir: []const u8, path: []const u
     }
 
     // Now clean the path by resolving "." and ".." components
-    var parts = std.ArrayList([]const u8).init(allocator);
-    defer parts.deinit();
+    var parts: std.ArrayList([]const u8) = .empty;
+    defer parts.deinit(allocator);
 
     // First, determine if this is an absolute path for special handling
     const is_absolute = (combined_path[0] == '/') or
@@ -174,22 +174,22 @@ pub fn normalizePath(allocator: Allocator, base_dir: []const u8, path: []const u
         if (builtin.os.tag == .windows) {
             if (path_len >= 2 and isSlash(combined_path[0]) and isSlash(combined_path[1])) {
                 // UNC path
-                try parts.append("\\"); // Changed from "\\\\" to "\" - will be properly handled during reconstruction
+                try parts.append(allocator, "\\"); // Changed from "\\\\" to "\" - will be properly handled during reconstruction
                 if (it.next()) |server| {
-                    try parts.append(server);
+                    try parts.append(allocator, server);
                     if (it.next()) |share| {
-                        try parts.append(share);
+                        try parts.append(allocator, share);
                     }
                 }
             } else if (path_len >= 3 and combined_path[1] == ':' and isSlash(combined_path[2])) {
                 // Drive letter part (e.g., "C:\") - store it for special handling
                 const drive_part = combined_path[0..3];
-                try parts.append(drive_part);
+                try parts.append(allocator, drive_part);
                 _ = it.next(); // Skip the drive letter part
             }
         } else {
             // Unix absolute path
-            try parts.append("/");
+            try parts.append(allocator, "/");
         }
     }
 
@@ -221,18 +221,18 @@ pub fn normalizePath(allocator: Allocator, base_dir: []const u8, path: []const u
                 }
             } else if (!is_absolute) {
                 // For relative paths, keep the ".." components
-                try parts.append(component);
+                try parts.append(allocator, component);
             }
             // For absolute paths, just drop ".." at the root level
         } else if (component.len > 0) {
             // Add non-empty components
-            try parts.append(component);
+            try parts.append(allocator, component);
         }
     }
 
     // Reconstruct the cleaned path
-    var result = std.ArrayList(u8).init(allocator);
-    defer result.deinit();
+    var result: std.ArrayList(u8) = .empty;
+    defer result.deinit(allocator);
 
     // Always use forward slashes for cross-platform compatibility in test output
     const output_slash: u8 = '/';
@@ -242,19 +242,19 @@ pub fn normalizePath(allocator: Allocator, base_dir: []const u8, path: []const u
         parts.items[0].len == 3 and parts.items[0][1] == ':')
     {
         // Extract just the drive letter part (e.g., "C:")
-        try result.appendSlice(parts.items[0][0..2]);
+        try result.appendSlice(allocator, parts.items[0][0..2]);
 
         // Add the slash separately (avoiding double slash)
-        try result.append(output_slash);
+        try result.append(allocator, output_slash);
 
         // Add the remaining parts with separators, starting with the first part
         if (parts.items.len > 1) {
-            try result.appendSlice(parts.items[1]);
+            try result.appendSlice(allocator, parts.items[1]);
 
             // Add the rest of the parts with separators
             for (parts.items[2..]) |part| {
-                try result.append(output_slash);
-                try result.appendSlice(part);
+                try result.append(allocator, output_slash);
+                try result.appendSlice(allocator, part);
             }
         }
     }
@@ -263,17 +263,17 @@ pub fn normalizePath(allocator: Allocator, base_dir: []const u8, path: []const u
         (std.mem.eql(u8, parts.items[0], "\\") or std.mem.eql(u8, parts.items[0], "/")))
     {
         // This is a UNC path
-        try result.appendSlice("\\\\"); // Use double backslash for UNC
+        try result.appendSlice(allocator, "\\\\"); // Use double backslash for UNC
 
         // Add the remaining parts with separators
         // Add server without separator first
         if (parts.items.len > 1) {
-            try result.appendSlice(parts.items[1]);
+            try result.appendSlice(allocator, parts.items[1]);
 
             // Add share and other parts with separators
             for (parts.items[2..]) |part| {
-                try result.append(output_slash);
-                try result.appendSlice(part);
+                try result.append(allocator, output_slash);
+                try result.appendSlice(allocator, part);
             }
         }
     }
@@ -281,17 +281,17 @@ pub fn normalizePath(allocator: Allocator, base_dir: []const u8, path: []const u
     else {
         for (parts.items, 0..) |part, i| {
             if (i == 0) {
-                try result.appendSlice(part);
+                try result.appendSlice(allocator, part);
             } else {
-                try result.append(output_slash);
-                try result.appendSlice(part);
+                try result.append(allocator, output_slash);
+                try result.appendSlice(allocator, part);
             }
         }
     }
 
     // Handle empty result for relative paths
     if (result.items.len == 0 and !is_absolute) {
-        try result.append('.');
+        try result.append(allocator, '.');
     }
 
     // Special case for Unix absolute paths - normalize multiple leading slashes to a single slash
@@ -314,11 +314,11 @@ pub fn normalizePath(allocator: Allocator, base_dir: []const u8, path: []const u
     } // On Windows, make sure we preserve the leading slash for Unix-style paths for consistent test results
     if (is_unix_absolute and builtin.os.tag == .windows and result.items.len > 0 and result.items[0] != '/') {
         // Add back the leading slash for Unix absolute paths on Windows
-        try result.insertSlice(0, "/");
+        try result.insertSlice(allocator, 0, "/");
     }
 
     // Get the final result
-    const final_path = result.toOwnedSlice();
+    const final_path = result.toOwnedSlice(allocator);
 
     return final_path;
 }

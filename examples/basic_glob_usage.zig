@@ -1,12 +1,17 @@
 const std = @import("std");
 const zglob = @import("zglob");
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    // 0.17 hands an arena and an I/O instance to main, and a file writer is
+    // buffered, so it is flushed on the way out.
+    const allocator = init.arena.allocator();
 
-    var stdout = std.io.getStdOut().writer();
+    var stdout_buf: [4096]u8 = undefined;
+    var stdout_writer = std.Io.File.stdout().writer(init.io, &stdout_buf);
+    const stdout = &stdout_writer.interface;
+    defer stdout_writer.interface.flush() catch |err| {
+        std.debug.print("basic-glob-usage: failed to flush stdout: {s}\n", .{@errorName(err)});
+    };
 
     // Simple pattern matching
     {
@@ -14,7 +19,7 @@ pub fn main() !void {
         const pattern = "src/*.zig";
         try stdout.print("Finding files matching pattern: {s}\n", .{pattern});
 
-        const matches = try zglob.glob(allocator, pattern);
+        const matches = try zglob.glob(init.io, allocator, pattern);
         defer {
             for (matches) |match_path| {
                 allocator.free(match_path);
@@ -34,7 +39,7 @@ pub fn main() !void {
         const pattern = "**/*.zig";
         try stdout.print("Finding files matching pattern: {s}\n", .{pattern});
 
-        const matches = try zglob.glob(allocator, pattern);
+        const matches = try zglob.glob(init.io, allocator, pattern);
         defer {
             for (matches) |match_path| {
                 allocator.free(match_path);
@@ -58,7 +63,7 @@ pub fn main() !void {
         const pattern = "src/fs/*.zig";
         try stdout.print("Finding files matching pattern: {s}\n", .{pattern});
 
-        const glob_finder = zglob.zGlob.init(allocator);
+        const glob_finder = zglob.zGlob.init(init.io, allocator);
         const matches = try glob_finder.glob(pattern);
         defer {
             for (matches) |match_path| {
