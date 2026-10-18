@@ -19,6 +19,26 @@ pub const Capture = struct {
     end: usize,
 };
 
+/// The captures list, carrying its own allocator: the matcher's helpers pass a
+/// single pointer around, and since 0.17 `std.ArrayList` needs an allocator at
+/// every call, so the pointer alone no longer carries one.
+const CaptureList = struct {
+    allocator: Allocator,
+    list: std.ArrayList(Capture) = .empty,
+
+    fn deinit(self: *CaptureList) void {
+        self.list.deinit(self.allocator);
+    }
+
+    fn append(self: *CaptureList, capture: Capture) void {
+        self.list.append(self.allocator, capture) catch {};
+    }
+
+    fn resize(self: *CaptureList, new_len: usize) void {
+        self.list.resize(self.allocator, new_len) catch {};
+    }
+};
+
 pub const MatchGlob = struct {
     allocator: Allocator,
 
@@ -102,38 +122,38 @@ const State = struct {
         self.capture_index = self.wildcard.capture_index;
     }
 
-    fn beginCapture(self: *const State, captures: ?*std.ArrayList(Capture), capture: Capture) void {
+    fn beginCapture(self: *const State, captures: ?*CaptureList, capture: Capture) void {
         if (captures) |c| {
             const idx = @as(usize, self.capture_index);
-            if (idx < c.items.len) {
-                c.items[idx] = capture;
+            if (idx < c.list.items.len) {
+                c.list.items[idx] = capture;
             } else {
                 // Safety check to prevent excessive captures
-                if (c.items.len >= MAX_CAPTURES) return;
-                c.append(capture) catch {};
+                if (c.list.items.len >= MAX_CAPTURES) return;
+                c.append(capture);
             }
         }
     }
 
-    fn extendCapture(self: *const State, captures: ?*std.ArrayList(Capture)) void {
+    fn extendCapture(self: *const State, captures: ?*CaptureList) void {
         if (captures) |c| {
             const idx = @as(usize, self.capture_index);
-            if (idx < c.items.len) {
-                c.items[idx].end = self.path_index;
+            if (idx < c.list.items.len) {
+                c.list.items[idx].end = self.path_index;
             }
         }
     }
 
-    fn endCapture(self: *State, captures: ?*std.ArrayList(Capture)) void {
+    fn endCapture(self: *State, captures: ?*CaptureList) void {
         if (captures) |c| {
             const idx = @as(usize, self.capture_index);
-            if (idx < c.items.len) {
+            if (idx < c.list.items.len) {
                 self.capture_index += 1;
             }
         }
     }
 
-    fn addCharCapture(self: *State, captures: ?*std.ArrayList(Capture), path: []const u8) void {
+    fn addCharCapture(self: *State, captures: ?*CaptureList, path: []const u8) void {
         const char_len = if (self.path_index < path.len) Utf8.codepointLen(path[self.path_index]) else 1;
         self.beginCapture(captures, .{ .start = self.path_index, .end = self.path_index + char_len });
         self.endCapture(captures);
@@ -142,7 +162,7 @@ const State = struct {
     fn skipBraces(
         self: *State,
         glob: []const u8,
-        captures: ?*std.ArrayList(Capture),
+        captures: ?*CaptureList,
         stop_on_comma: bool,
     ) BraceState {
         var braces: usize = 1;
@@ -170,10 +190,10 @@ const State = struct {
                     }
                     if (captures) |cap| {
                         // Update existing or append new capture if below limit
-                        if (capture_index < cap.items.len) {
-                            cap.items[capture_index] = .{ .start = self.path_index, .end = self.path_index };
-                        } else if (cap.items.len < MAX_CAPTURES) {
-                            cap.append(.{ .start = self.path_index, .end = self.path_index }) catch {};
+                        if (capture_index < cap.list.items.len) {
+                            cap.list.items[capture_index] = .{ .start = self.path_index, .end = self.path_index };
+                        } else if (cap.list.items.len < MAX_CAPTURES) {
+                            cap.append(.{ .start = self.path_index, .end = self.path_index });
                         }
                         // Always increment index, even if we skipped appending due to capture limit
                         capture_index += 1;
@@ -239,7 +259,12 @@ const BraceStack = struct {
 
     fn init() BraceStack {
         return .{
-            .stack = [_]State{State.init()} ** 10,
+            // `[_]T{expr} ** n` no longer parses: the repeat operator takes a tuple.
+            .stack = braced: {
+                var stack: [MAX_BRACE_NESTING]State = undefined;
+                @memset(&stack, State.init());
+                break :braced stack;
+            },
             .length = 0,
             .longest_brace_match = 0,
         };
@@ -259,7 +284,7 @@ const BraceStack = struct {
         };
     }
 
-    fn pop(self: *BraceStack, state: *const State, captures: ?*std.ArrayList(Capture)) State {
+    fn pop(self: *BraceStack, state: *const State, captures: ?*CaptureList) State {
         self.length -= 1;
         var new_state = State{
             .path_index = self.longest_brace_match,
@@ -277,7 +302,7 @@ const BraceStack = struct {
 
         if (captures) |c| {
             // Convert the length to u32, with safety check
-            const len = c.items.len;
+            const len = c.list.items.len;
             new_state.capture_index = if (len > std.math.maxInt(u32))
                 std.math.maxInt(u32)
             else
@@ -357,9 +382,9 @@ pub fn globMatchWithCaptures(glob: []const u8, path: []const u8, allocator: Allo
         return null;
     }
 
-    var captures = std.ArrayList(Capture).init(allocator);
+    var captures = CaptureList{ .allocator = allocator };
     if (globMatchInternal(glob, path, &captures)) {
-        return captures;
+        return captures.list;
     }
     captures.deinit();
     return null;
@@ -420,7 +445,7 @@ const Alternative = struct {
 
 /// Split a pattern by alternation characters (|) while respecting nested parentheses
 fn splitByAlternation(pattern: []const u8) std.ArrayList(Alternative) {
-    var result = std.ArrayList(Alternative).init(std.heap.page_allocator);
+    var result: std.ArrayList(Alternative) = .empty;
     var alt_start: usize = 0;
     var depth: usize = 0;
     var i: usize = 0;
@@ -439,7 +464,7 @@ fn splitByAlternation(pattern: []const u8) std.ArrayList(Alternative) {
             '|' => {
                 if (depth == 0) {
                     // Found an alternation at the top level
-                    result.append(.{ .start = alt_start, .end = i }) catch {};
+                    result.append(std.heap.page_allocator, .{ .start = alt_start, .end = i }) catch {};
                     alt_start = i + 1;
                 }
             },
@@ -449,14 +474,14 @@ fn splitByAlternation(pattern: []const u8) std.ArrayList(Alternative) {
 
     // Add the last segment if there is one
     if (alt_start < pattern.len) {
-        result.append(.{ .start = alt_start, .end = pattern.len }) catch {};
+        result.append(std.heap.page_allocator, .{ .start = alt_start, .end = pattern.len }) catch {};
     }
 
     return result;
 }
 
 /// Internal implementation of glob matching
-fn globMatchInternal(glob: []const u8, path: []const u8, captures: ?*std.ArrayList(Capture)) bool {
+fn globMatchInternal(glob: []const u8, path: []const u8, captures: ?*CaptureList) bool {
     // Additional safety check for internal state management
     if (glob.len > std.math.maxInt(u32) or path.len > std.math.maxInt(u32)) {
         return false;
@@ -562,7 +587,7 @@ fn globMatchInternal(glob: []const u8, path: []const u8, captures: ?*std.ArrayLi
             state = last;
             brace_stack.length -= 1;
             if (captures) |c| {
-                c.resize(state.capture_index) catch {};
+                c.resize(state.capture_index);
             }
             if (state.wildcard.path_index > 0 and state.wildcard.path_index <= path.len) {
                 state.backtrack();
@@ -613,7 +638,7 @@ fn handleAsterisk(
     state: *State,
     glob: []const u8,
     path: []const u8,
-    captures: ?*std.ArrayList(Capture),
+    captures: ?*CaptureList,
     brace_stack: *BraceStack,
 ) bool {
     const is_globstar = state.glob_index + 1 < glob.len and glob[state.glob_index + 1] == '*';
@@ -625,7 +650,7 @@ fn handleAsterisk(
     // If we're on a different glob index than before, start a new capture
     // Otherwise, extend the active one
     if (captures) |capture_list| {
-        if (capture_list.items.len == 0 or state.glob_index != state.wildcard.glob_index) {
+        if (capture_list.list.items.len == 0 or state.glob_index != state.wildcard.glob_index) {
             state.wildcard.capture_index = state.capture_index;
             state.beginCapture(captures, .{ .start = state.path_index, .end = state.path_index });
         } else {
@@ -699,7 +724,7 @@ fn handleAsterisk(
 fn handleQuestionMark(
     state: *State,
     path: []const u8,
-    captures: ?*std.ArrayList(Capture),
+    captures: ?*CaptureList,
 ) bool {
     if (state.path_index < path.len) {
         if (!isSeparator(path[state.path_index])) {
@@ -717,7 +742,7 @@ fn handleCharacterClass(
     state: *State,
     glob: []const u8,
     path: []const u8,
-    captures: ?*std.ArrayList(Capture),
+    captures: ?*CaptureList,
 ) bool {
     if (state.path_index < path.len) {
         state.glob_index += 1;
@@ -817,7 +842,7 @@ fn handleCharacterClass(
 inline fn handleOpenBrace(
     state: *State,
     path: []const u8,
-    captures: ?*std.ArrayList(Capture),
+    captures: ?*CaptureList,
     brace_stack: *BraceStack,
 ) bool {
     if (state.path_index < path.len) {
@@ -837,7 +862,7 @@ inline fn handleOpenBrace(
 /// Handle the '}' pattern character (brace expansion) in glob matching
 inline fn handleCloseBrace(
     state: *State,
-    captures: ?*std.ArrayList(Capture),
+    captures: ?*CaptureList,
     brace_stack: *BraceStack,
 ) bool {
     if (brace_stack.length > 0) {
@@ -863,7 +888,7 @@ inline fn handleLiteralCharacter(
     state: *State,
     glob: []const u8,
     path: []const u8,
-    captures: ?*std.ArrayList(Capture),
+    captures: ?*CaptureList,
     brace_stack: *BraceStack,
 ) bool {
     // Ensure both indices are in bounds
@@ -931,7 +956,7 @@ fn matchCharacter(
 /// Update state after a successful character match
 fn updateStateAfterMatch(
     state: *State,
-    captures: ?*std.ArrayList(Capture),
+    captures: ?*CaptureList,
     brace_stack: *BraceStack,
     glob: []const u8,
     path_char_len: usize,
@@ -1015,7 +1040,7 @@ fn handleExtGlob(
     state: *State,
     glob: []const u8,
     path: []const u8,
-    captures: ?*std.ArrayList(Capture),
+    captures: ?*CaptureList,
     brace_stack: *BraceStack,
 ) bool {
     // captures are passed to recursive globMatchInternal calls
@@ -1070,7 +1095,7 @@ fn handleExtGlob(
 
                 // Split the pattern by the alternation character
                 var alternatives = splitByAlternation(pattern_glob);
-                defer alternatives.deinit();
+                defer alternatives.deinit(std.heap.page_allocator);
 
                 var matched = false;
                 var curr_path_index = state.path_index;
@@ -1233,7 +1258,7 @@ fn handleExtGlob(
 
                 // Split the pattern by alternations
                 var alternatives = splitByAlternation(pattern_glob);
-                defer alternatives.deinit();
+                defer alternatives.deinit(std.heap.page_allocator);
 
                 // Check if any alternative matches the entire path
                 var matched_any = false;
@@ -1370,7 +1395,7 @@ fn handleExtGlob(
             if (has_alternation) {
                 // Split the pattern by alternations
                 var alternatives = splitByAlternation(pattern_glob);
-                defer alternatives.deinit();
+                defer alternatives.deinit(std.heap.page_allocator);
 
                 // Try each alternative
                 for (alternatives.items) |alt| {
@@ -1446,7 +1471,7 @@ fn handleExtGlob(
             if (has_alternation) {
                 // Split the pattern by alternations
                 var alternatives = splitByAlternation(pattern_glob);
-                defer alternatives.deinit();
+                defer alternatives.deinit(std.heap.page_allocator);
 
                 var curr_path_index = state.path_index;
                 var match_count: usize = 0;
@@ -1596,7 +1621,7 @@ fn handleExtGlob(
             if (has_alternation) {
                 // Split the pattern by alternations
                 var alternatives = splitByAlternation(pattern_glob);
-                defer alternatives.deinit();
+                defer alternatives.deinit(std.heap.page_allocator);
 
                 // Try each alternative
                 for (alternatives.items) |alt| {

@@ -181,7 +181,7 @@ test "UTF-8 captures basic" {
         try testing.expect(false); // This should not happen
         return;
     };
-    defer captures.deinit();
+    defer captures.deinit(testing.allocator);
 
     try testing.expectEqual(@as(usize, 1), captures.items.len);
     // In UTF-8, "α" is 2 bytes (0xCE 0xB1), so "β" starts at byte position 2

@@ -183,7 +183,7 @@ test "captures basic" {
         try testing.expect(false); // This should not happen
         return;
     };
-    defer captures.deinit();
+    defer captures.deinit(testing.allocator);
 
     try testing.expectEqual(@as(usize, 1), captures.items.len);
     try testing.expectEqual(@as(usize, 1), captures.items[0].start);

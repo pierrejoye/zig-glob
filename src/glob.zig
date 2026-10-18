@@ -1,22 +1,24 @@
 const std = @import("std");
 const match = @import("match.zig");
 const Allocator = std.mem.Allocator;
-const fs_std = std.fs;
 const path = std.fs.path;
 const fsModule = @import("fs.zig");
 const dir = @import("fs/dir.zig");
 
 /// zGlob struct for object-oriented glob operations
-/// Uses a provided allocator for all memory operations
+/// Uses an I/O instance to read directories, and a provided allocator for all
+/// memory operations
 pub const zGlob = struct {
+    io: std.Io,
     allocator: Allocator,
     fs: fsModule.Fs,
 
-    /// Initialize a new zGlob instance with the given allocator
-    pub fn init(allocator: Allocator) zGlob {
+    /// Initialize a new zGlob instance with the given I/O instance and allocator
+    pub fn init(io: std.Io, allocator: Allocator) zGlob {
         return zGlob{
+            .io = io,
             .allocator = allocator,
-            .fs = fsModule.Fs.init(allocator),
+            .fs = fsModule.Fs.init(io, allocator),
         };
     }
 
@@ -36,12 +38,12 @@ pub const zGlob = struct {
             return error.InvalidPath;
         }
 
-        var matches = std.ArrayList([]const u8).init(self.allocator);
+        var matches: std.ArrayList([]const u8) = .empty;
         errdefer {
             for (matches.items) |item| {
                 self.allocator.free(item);
             }
-            matches.deinit();
+            matches.deinit(self.allocator);
         }
 
         const norm_pattern = try normalizePath(self.allocator, pattern);
@@ -50,7 +52,7 @@ pub const zGlob = struct {
         const is_recursive = std.mem.indexOf(u8, norm_pattern, "**") != null;
         try self.walkAndMatchFiles(cwd, norm_pattern, &matches, is_recursive);
 
-        return matches.toOwnedSlice();
+        return matches.toOwnedSlice(self.allocator);
     }
 
     /// Walk a directory and find files matching the pattern
@@ -65,21 +67,21 @@ pub const zGlob = struct {
             const null_pos = std.mem.indexOfScalar(u8, base_dir, 0).?;
             break :blk base_dir[0..null_pos];
         } else base_dir;
-        var dir_handle = fs_std.cwd().openDir(dir_path, .{ .iterate = true }) catch |err| {
+        var dir_handle = std.Io.Dir.cwd().openDir(self.io, dir_path, .{ .iterate = true }) catch |err| {
             if (err == error.FileNotFound or err == error.NotDir) {
                 return;
             }
             return err;
         };
-        defer dir_handle.close();
+        defer dir_handle.close(self.io);
         const has_path_separator = std.mem.indexOfAny(u8, pattern, "/\\") != null;
-        var components = std.ArrayList([]const u8).init(self.allocator);
-        defer components.deinit();
+        var components: std.ArrayList([]const u8) = .empty;
+        defer components.deinit(self.allocator);
 
         if (has_path_separator) {
             var iter = std.mem.tokenizeAny(u8, pattern, "/\\");
             while (iter.next()) |comp| {
-                try components.append(comp);
+                try components.append(self.allocator, comp);
             }
         }
 
@@ -93,7 +95,7 @@ pub const zGlob = struct {
 
                 // Iterate through directory entries to find matching first directory
                 var first_level_iter = dir_handle.iterate();
-                while (try first_level_iter.next()) |entry| {
+                while (try first_level_iter.next(self.io)) |entry| {
                     if (entry.kind == .directory and match.globMatch(first_dir, entry.name)) {
                         // Found a matching directory, now recurse with the rest of the pattern
                         const sub_dir = try path.join(self.allocator, &[_][]const u8{ base_dir, entry.name });
@@ -111,7 +113,7 @@ pub const zGlob = struct {
         }
 
         var iter = dir_handle.iterate();
-        while (try iter.next()) |entry| {
+        while (try iter.next(self.io)) |entry| {
             const full_path = try path.join(self.allocator, &[_][]const u8{ base_dir, entry.name });
             defer self.allocator.free(full_path);
 
@@ -122,13 +124,13 @@ pub const zGlob = struct {
                     // For path patterns, check if this directory matches the first component
                     if (match.globMatch(components.items[0], entry.name)) {
                         // Recurse with the remaining pattern components
-                        var new_pattern = std.ArrayList(u8).init(self.allocator);
-                        defer new_pattern.deinit();
+                        var new_pattern: std.ArrayList(u8) = .empty;
+                        defer new_pattern.deinit(self.allocator);
 
                         // Skip the first component and build the new pattern
                         for (components.items[1..], 0..) |comp, i| {
-                            if (i > 0) try new_pattern.append('/');
-                            try new_pattern.appendSlice(comp);
+                            if (i > 0) try new_pattern.append(self.allocator, '/');
+                            try new_pattern.appendSlice(self.allocator, comp);
                         }
 
                         // Recurse into the subdirectory with the new pattern
@@ -150,7 +152,7 @@ pub const zGlob = struct {
             }
             if (is_match) {
                 const owned_path = try self.allocator.dupe(u8, full_path);
-                try matches.append(owned_path);
+                try matches.append(self.allocator, owned_path);
             }
         }
     }
@@ -178,12 +180,12 @@ pub const zGlob = struct {
 
 /// Glob function that finds files matching a glob pattern using the current working directory
 /// Returns a slice of matching paths that must be freed by the caller
-pub fn glob(allocator: Allocator, pattern: []const u8) ![][]const u8 {
+pub fn glob(io: std.Io, allocator: Allocator, pattern: []const u8) ![][]const u8 {
     // Create a temporary zGlob instance
-    var zglob = zGlob.init(allocator);
+    var zglob = zGlob.init(io, allocator);
 
     // Get the absolute path of the current working directory
-    const fs_helper = fsModule.Fs.init(allocator);
+    const fs_helper = fsModule.Fs.init(io, allocator);
     const cwd = try fs_helper.getCwd();
     defer allocator.free(cwd);
 
@@ -193,12 +195,12 @@ pub fn glob(allocator: Allocator, pattern: []const u8) ![][]const u8 {
 
 /// Glob function with a custom current working directory
 /// Returns a slice of matching paths that must be freed by the caller
-pub fn globWithCwd(allocator: Allocator, pattern: []const u8, cwd: []const u8) ![][]const u8 {
+pub fn globWithCwd(io: std.Io, allocator: Allocator, pattern: []const u8, cwd: []const u8) ![][]const u8 {
     // Create a temporary zGlob instance
-    var zglob = zGlob.init(allocator);
+    var zglob = zGlob.init(io, allocator);
 
     // If the path is not absolute, convert it to an absolute path
-    const fs_helper = fsModule.Fs.init(allocator);
+    const fs_helper = fsModule.Fs.init(io, allocator);
     if (!fs_helper.isAbsolutePath(cwd)) {
         // Get the current working directory
         const current_dir = try fs_helper.getCwd();

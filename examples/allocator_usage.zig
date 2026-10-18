@@ -1,12 +1,17 @@
 const std = @import("std");
 const zglob = @import("zglob");
 
-pub fn main() !void {
-    var stdout = std.io.getStdOut().writer();
+pub fn main(init: std.process.Init) !void {
+    var stdout_buf: [4096]u8 = undefined;
+    var stdout_writer = std.Io.File.stdout().writer(init.io, &stdout_buf);
+    const stdout = &stdout_writer.interface;
+    defer stdout_writer.interface.flush() catch |err| {
+        std.debug.print("allocator-usage-example: failed to flush stdout: {s}\n", .{@errorName(err)});
+    };
 
     // Example 1: Using default page_allocator
     {
-        const fs_helper = zglob.fs.Fs.init(std.heap.page_allocator);
+        const fs_helper = zglob.fs.Fs.init(init.io, std.heap.page_allocator);
         const cwd = try fs_helper.getCwd();
         defer std.heap.page_allocator.free(cwd); // Must free with page_allocator
         try stdout.print("Example 1 - Default allocator: Current directory: {s}\n", .{cwd});
@@ -18,37 +23,32 @@ pub fn main() !void {
         defer arena.deinit(); // This frees ALL memory allocated by the arena
 
         const allocator = arena.allocator();
-        const fs_helper = zglob.fs.Fs.init(allocator);
+        const fs_helper = zglob.fs.Fs.init(init.io, allocator);
         const cwd = try fs_helper.getCwd();
         // No need to free cwd here - arena.deinit() will free everything at once
 
         try stdout.print("Example 2 - Arena allocator: Current directory: {s}\n", .{cwd});
     }
 
-    // Example 3: Using a general purpose allocator (best for long-running programs)
+    // Example 3: Using the general purpose allocator that the runtime provides
+    // (best for long-running programs)
     {
-        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-        defer _ = gpa.deinit();
-
-        const allocator = gpa.allocator();
-        const fs_helper = zglob.fs.Fs.init(allocator);
+        const allocator = init.gpa;
+        const fs_helper = zglob.fs.Fs.init(init.io, allocator);
         const cwd = try fs_helper.getCwd();
         defer allocator.free(cwd);
 
         try stdout.print("Example 3 - GPA: Current directory: {s}\n", .{cwd});
     }
 
-    // Example 4: Using the zGlob struct with a GPA
+    // Example 4: Using the zGlob struct with the GPA
     {
         try stdout.print("\nzGlob examples with different allocators:\n", .{});
 
-        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-        defer _ = gpa.deinit();
+        const allocator = init.gpa;
 
-        const allocator = gpa.allocator();
-
-        // Create a zGlob instance with the GPA
-        var glob = zglob.zGlob.init(allocator);
+        // Create a zGlob instance with the runtime's I/O and the GPA
+        var glob = zglob.zGlob.init(init.io, allocator);
 
         // Use the glob function
         try stdout.print("Searching for *.zig files in the current directory...\n", .{});
@@ -74,8 +74,8 @@ pub fn main() !void {
 
         const allocator = arena.allocator();
 
-        // Create a zGlob instance with the arena allocator
-        var glob = zglob.zGlob.init(allocator);
+        // Create a zGlob instance with the runtime's I/O and the arena allocator
+        var glob = zglob.zGlob.init(init.io, allocator);
 
         // Use the glob function
         try stdout.print("Searching for src/*.zig files...\n", .{});

@@ -2,22 +2,22 @@ const std = @import("std");
 const zglob = @import("zglob");
 const testing = std.testing;
 const Allocator = std.mem.Allocator;
-const fs = std.fs;
 const path = std.fs.path;
 
 // Helper function to create test files
-fn createTestDir(allocator: Allocator) ![]const u8 {
+fn createTestDir(io: std.Io, allocator: Allocator) ![]const u8 {
     // Create a temporary test directory
-    const cwd = try zglob.fs.getCwd();
+    const fs_helper = zglob.Fs.init(io, std.heap.page_allocator);
+    const cwd = try fs_helper.getCwd();
     defer std.heap.page_allocator.free(cwd);
 
     const test_dir = try path.join(allocator, &[_][]const u8{ cwd, "glob_recursive_test_dir" });
 
     // Clean up any existing test directory
-    fs.cwd().deleteTree(test_dir) catch {};
+    std.Io.Dir.cwd().deleteTree(io, test_dir) catch {};
 
     // Create test directories
-    try fs.cwd().makePath(test_dir);
+    try std.Io.Dir.cwd().createDirPath(io, test_dir);
 
     const dirs = [_][]const u8{
         "dir1",
@@ -30,7 +30,7 @@ fn createTestDir(allocator: Allocator) ![]const u8 {
     for (dirs) |dir_path| {
         const full_dir_path = try path.join(allocator, &[_][]const u8{ test_dir, dir_path });
         defer allocator.free(full_dir_path);
-        try fs.cwd().makePath(full_dir_path);
+        try std.Io.Dir.cwd().createDirPath(io, full_dir_path);
     }
 
     // Create some test files
@@ -54,18 +54,18 @@ fn createTestDir(allocator: Allocator) ![]const u8 {
 
         // Create parent directories if needed
         const dir_name = path.dirname(full_path) orelse "";
-        try fs.cwd().makePath(dir_name);
+        try std.Io.Dir.cwd().createDirPath(io, dir_name);
 
-        const file = try fs.createFileAbsolute(full_path, .{});
-        try file.writeAll("test content");
-        file.close();
+        const file = try std.Io.Dir.createFileAbsolute(io, full_path, .{});
+        try file.writeStreamingAll(io, "test content");
+        file.close(io);
     }
 
     return test_dir;
 }
 
-fn cleanupTestDir(test_dir: []const u8) !void {
-    try fs.cwd().deleteTree(test_dir);
+fn cleanupTestDir(io: std.Io, test_dir: []const u8) !void {
+    try std.Io.Dir.cwd().deleteTree(io, test_dir);
 }
 
 test "glob recursive pattern with **" {
@@ -73,13 +73,18 @@ test "glob recursive pattern with **" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const test_dir = try createTestDir(allocator);
-    defer cleanupTestDir(test_dir) catch {};
+    // 0.17 threads an explicit I/O instance through every filesystem call.
+    var io_state = std.Io.Threaded.init(allocator, .{});
+    defer io_state.deinit();
+    const io = io_state.io();
+
+    const test_dir = try createTestDir(io, allocator);
+    defer cleanupTestDir(io, test_dir) catch {};
 
     // Test finding all test_file.txt recursively
     {
         const pattern = try path.join(allocator, &[_][]const u8{ test_dir, "**/test_file.txt" });
-        const results = try zglob.glob(allocator, pattern);
+        const results = try zglob.glob(io, allocator, pattern);
         defer {
             for (results) |result| {
                 allocator.free(result);
@@ -123,7 +128,7 @@ test "glob recursive pattern with **" {
     // Test finding all .txt files in dir1 and subdirectories
     {
         const pattern = try path.join(allocator, &[_][]const u8{ test_dir, "dir1", "**/*.txt" });
-        const results = try zglob.glob(allocator, pattern);
+        const results = try zglob.glob(io, allocator, pattern);
         defer {
             for (results) |result| {
                 allocator.free(result);
@@ -152,7 +157,7 @@ test "glob recursive pattern with **" {
     // Test finding files by pattern across subdirectories
     {
         const pattern = try path.join(allocator, &[_][]const u8{ test_dir, "**/*test*.txt" });
-        const results = try zglob.glob(allocator, pattern);
+        const results = try zglob.glob(io, allocator, pattern);
         defer {
             for (results) |result| {
                 allocator.free(result);
@@ -170,13 +175,18 @@ test "glob with simple wildcard" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const test_dir = try createTestDir(allocator);
-    defer cleanupTestDir(test_dir) catch {};
+    // 0.17 threads an explicit I/O instance through every filesystem call.
+    var io_state = std.Io.Threaded.init(allocator, .{});
+    defer io_state.deinit();
+    const io = io_state.io();
+
+    const test_dir = try createTestDir(io, allocator);
+    defer cleanupTestDir(io, test_dir) catch {};
 
     // Test finding all .txt files in the root test directory
     {
         const pattern = try path.join(allocator, &[_][]const u8{ test_dir, "*.txt" });
-        const results = try zglob.glob(allocator, pattern);
+        const results = try zglob.glob(io, allocator, pattern);
         defer {
             for (results) |result| {
                 allocator.free(result);
@@ -209,13 +219,18 @@ test "glob with negated pattern" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const test_dir = try createTestDir(allocator);
-    defer cleanupTestDir(test_dir) catch {};
+    // 0.17 threads an explicit I/O instance through every filesystem call.
+    var io_state = std.Io.Threaded.init(allocator, .{});
+    defer io_state.deinit();
+    const io = io_state.io();
+
+    const test_dir = try createTestDir(io, allocator);
+    defer cleanupTestDir(io, test_dir) catch {};
 
     // Test finding files that don't match a pattern
     {
         const pattern = try path.join(allocator, &[_][]const u8{ test_dir, "**/!(*test*).*" });
-        const results = try zglob.glob(allocator, pattern);
+        const results = try zglob.glob(io, allocator, pattern);
         defer {
             for (results) |result| {
                 allocator.free(result);

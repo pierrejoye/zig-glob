@@ -11,6 +11,9 @@ I used [picomatch](https://github.com/micromatch/picomatch) picomatch as a refer
 
 ## Build
 
+Requires Zig 0.17.0 or later: filesystem calls take an `std.Io` instance, which is
+what `std.process.Init` hands to `main`.
+
 ```bash
 zig build
 ```
@@ -68,15 +71,15 @@ pub const MatchGlob = struct {
 
 ```zig
 // Find files matching a pattern using the current working directory
-pub fn glob(allocator: std.mem.Allocator, pattern: []const u8) ![][]const u8
+pub fn glob(io: std.Io, allocator: std.mem.Allocator, pattern: []const u8) ![][]const u8
 
 // Find files matching a pattern using a specific directory as base
-pub fn globWithCwd(allocator: std.mem.Allocator, pattern: []const u8, cwd: []const u8) ![][]const u8
+pub fn globWithCwd(io: std.Io, allocator: std.mem.Allocator, pattern: []const u8, cwd: []const u8) ![][]const u8
 
 // Object-oriented file globber
 pub const zGlob = struct {
-    // Initialize a new globber with an allocator
-    pub fn init(allocator: std.mem.Allocator) zGlob
+    // Initialize a new globber with an I/O instance and an allocator
+    pub fn init(io: std.Io, allocator: std.mem.Allocator) zGlob
     
     // Find files matching a pattern using the current working directory
     pub fn glob(self: zGlob, pattern: []const u8) ![][]const u8
@@ -91,8 +94,8 @@ pub const zGlob = struct {
 ```zig
 // Filesystem helper struct
 pub const Fs = struct {
-    // Initialize with an allocator
-    pub fn init(allocator: std.mem.Allocator) Fs
+    // Initialize with an I/O instance and an allocator
+    pub fn init(io: std.Io, allocator: std.mem.Allocator) Fs
     
     // Get the current working directory
     pub fn getCwd(self: Fs) ![]const u8
@@ -162,13 +165,11 @@ test "Basic pattern matching" {
 const std = @import("std");
 const zglob = @import("zglob");
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.arena.allocator();
     
     // Find all Zig files in the src directory
-    const matches = try zglob.glob(allocator, "src/*.zig");
+    const matches = try zglob.glob(init.io, allocator, "src/*.zig");
     defer {
         for (matches) |match_path| {
             allocator.free(match_path);
@@ -197,8 +198,8 @@ pub const Capture = struct { start: usize, end: usize }
 pub const MatchGlob = struct { ... }
 
 // File finding functions
-pub fn glob(allocator: std.mem.Allocator, pattern: []const u8) ![][]const u8
-pub fn globWithCwd(allocator: std.mem.Allocator, pattern: []const u8, cwd: []const u8) ![][]const u8
+pub fn glob(io: std.Io, allocator: std.mem.Allocator, pattern: []const u8) ![][]const u8
+pub fn globWithCwd(io: std.Io, allocator: std.mem.Allocator, pattern: []const u8, cwd: []const u8) ![][]const u8
 pub const zGlob = struct { ... }
 
 // Filesystem utilities
@@ -212,10 +213,11 @@ The filesystem module provides utilities for handling paths:
 
 ```zig
 pub const Fs = struct {
+    io: std.Io,
     allocator: std.mem.Allocator,
 
     // Create a new Fs instance
-    pub fn init(allocator: std.mem.Allocator) Fs
+    pub fn init(io: std.Io, allocator: std.mem.Allocator) Fs
 
     // Get the current working directory
     pub fn getCwd(self: Fs) ![]const u8

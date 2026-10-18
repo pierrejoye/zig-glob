@@ -13,25 +13,30 @@ fn dumpPath(path: []const u8) void {
     std.debug.print("\n", .{});
 }
 
-pub fn main() !void {
-    const stdout = std.io.getStdOut().writer();
-    const stderr = std.io.getStdErr().writer();
+pub fn main(init: std.process.Init) !void {
+    // On 0.17 the entry point is handed the I/O instance and the arguments, and
+    // a file writer is buffered, so both streams are flushed on the way out.
+    var stdout_buf: [4096]u8 = undefined;
+    var stderr_buf: [4096]u8 = undefined;
+    var stdout_file = std.Io.File.stdout().writer(init.io, &stdout_buf);
+    var stderr_file = std.Io.File.stderr().writer(init.io, &stderr_buf);
+    const stdout = &stdout_file.interface;
+    const stderr = &stderr_file.interface;
+    defer stdout_file.interface.flush() catch |err| {
+        std.debug.print("zglob: failed to flush stdout: {s}\n", .{@errorName(err)});
+    };
+    defer stderr_file.interface.flush() catch |err| {
+        std.debug.print("zglob: failed to flush stderr: {s}\n", .{@errorName(err)});
+    };
 
-    // Create a general purpose allocator as the parent
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-
-    // Create an arena allocator with the gpa as its parent
-    var arena = std.heap.ArenaAllocator.init(gpa.allocator());
-    defer arena.deinit();
-
-    // Get the allocator interface
-    const allocator = arena.allocator();
+    // 0.17 hands a general purpose allocator and an arena to main, so there is
+    // no allocator boilerplate left to write here.
+    const allocator = init.arena.allocator();
 
     // Create a zGlob instance to use its filesystem functionality
-    var glob = zglob.zGlob.init(allocator);
+    var glob = zglob.zGlob.init(init.io, allocator);
 
-    var args = try std.process.argsWithAllocator(allocator);
+    var args = try std.process.Args.iterateAllocator(init.minimal.args, allocator);
     defer args.deinit();
     _ = args.next();
 
@@ -64,8 +69,9 @@ pub fn main() !void {
         try stdout.print("Pattern: {s}\nPath: {s}\nResult: {}\n", .{ glob_pattern, path, result });
 
         if (result) {
-            if (zglob.globMatchWithCaptures(glob_pattern, path, allocator)) |captures| {
-                defer captures.deinit();
+            if (zglob.globMatchWithCaptures(glob_pattern, path, allocator)) |maybe_captures| {
+                var captures = maybe_captures;
+                defer captures.deinit(allocator);
 
                 try stdout.print("Captures ({d}):\n", .{captures.items.len});
                 for (captures.items, 0..) |capture, i| {
@@ -111,9 +117,9 @@ pub fn main() !void {
 }
 
 test "simple test" {
-    var list = std.ArrayList(i32).init(std.testing.allocator);
-    defer list.deinit();
-    try list.append(42);
+    var list: std.ArrayList(i32) = .empty;
+    defer list.deinit(std.testing.allocator);
+    try list.append(std.testing.allocator, 42);
     try std.testing.expectEqual(@as(i32, 42), list.pop());
 }
 
